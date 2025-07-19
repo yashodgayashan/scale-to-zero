@@ -1,0 +1,18 @@
+[package]
+name = "testapp-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+testapp-common = { path = "../testapp-common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+network-types = "0.0.8"
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "testapp"
+path = "src/main.rs"
