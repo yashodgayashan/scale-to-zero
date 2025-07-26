@@ -15,16 +15,8 @@ use testapp_common::PacketLog;
 mod kubernetes;
 mod utils;
     
-#[derive(Debug, Parser)]
-struct Opt {
-    #[clap(short, long, default_value = "eth0")]
-    iface: String,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // let opt = Opt::parse();
-
     env_logger::init();
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
@@ -61,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
         // This can happen if you remove all log statements from your eBPF program.
         warn!("failed to initialize eBPF logger: {e}");
     }
-    // let Opt { iface } = opt;
+
     let program: &mut Xdp = ebpf.program_mut("testapp").unwrap().try_into()?;
     program.load()?;
     

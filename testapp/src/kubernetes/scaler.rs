@@ -1,6 +1,6 @@
 use super::models::{ServiceData, WATCHED_SERVICES};
 use crate::kubernetes::models::LAST_CALLED;
-use anyhow::Ok;
+use anyhow::Result;
 use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::Service;
 use k8s_openapi::chrono;
@@ -11,7 +11,7 @@ use kube::Client;
 use log::info;
 use std::time::{Duration, SystemTime};
 
-pub async fn scale_down() -> anyhow::Result<()> {
+pub async fn scale_down() -> Result<()> {
     let client = Client::try_default().await?;
     loop {
         let keys: Vec<_>;
@@ -25,6 +25,7 @@ pub async fn scale_down() -> anyhow::Result<()> {
                 let mut watched_services = WATCHED_SERVICES.lock().unwrap();
                 service = watched_services.get_mut(&key).unwrap().clone();
             }
+            info!(target: "scale_down", "Service {} in namespace {} has scale_down_time: {} and last_packet_time: {}", service.name, service.namespace, service.scale_down_time, service.last_packet_time);
             let idle_minutes = service.scale_down_time;
             let last_packet_time = service.last_packet_time;
             let now = chrono::Utc::now().timestamp();
@@ -69,7 +70,7 @@ pub async fn scale_down() -> anyhow::Result<()> {
     }
 }
 
-pub async fn scale_up(service_ip: String) -> anyhow::Result<()> {
+pub async fn scale_up(service_ip: String) -> Result<()> {
     let now = SystemTime::now();
     {
         let mut last_called = LAST_CALLED.lock().unwrap();
@@ -95,14 +96,14 @@ pub async fn scale_up(service_ip: String) -> anyhow::Result<()> {
     info!(target: "scale_up", "Scaling up {} {} in namespace {}", service.kind, service.name, service.namespace);
     
     // Check for cascade scaling dependencies from service annotations
-    if let Ok(dependencies) = get_service_dependencies(&client, &service.name, &service.namespace).await {
-        if !dependencies.is_empty() {
+    match get_service_dependencies(&client, &service.name, &service.namespace).await {
+        Ok(dependencies) if !dependencies.is_empty() => {
             info!(target: "scale_up", "Service {} has dependencies: {:?}, initiating cascade scaling", service.name, dependencies);
             
             // Scale up dependent services concurrently
             let mut scale_tasks = Vec::new();
-            for dep_name in dependencies {
-                if let Some(dep_ip) = find_service_ip_by_name(&dep_name).await {
+            for dep_name in &dependencies {
+                if let Some(dep_ip) = find_service_ip_by_name(dep_name).await {
                     info!(target: "scale_up", "Cascading scale up to dependent service: {} ({})", dep_name, dep_ip);
                     let client_clone = client.clone();
                     let dep_ip_clone = dep_ip.clone();
@@ -120,6 +121,7 @@ pub async fn scale_up(service_ip: String) -> anyhow::Result<()> {
                 }
             }
         }
+        _ => {}
     }
     
     // Scale up the original service
@@ -128,11 +130,12 @@ pub async fn scale_up(service_ip: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn get_service_dependencies(client: &Client, service_name: &str, namespace: &str) -> anyhow::Result<Vec<String>> {
+async fn get_service_dependencies(client: &Client, service_name: &str, namespace: &str) -> Result<Vec<String>> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     
     match services.get(service_name).await {
         Ok(service) => {
+            info!(target: "scale_up", "Service {} has annotations: {:?}", service_name, service.metadata.annotations);
             if let Some(annotations) = service.metadata.annotations {
                 if annotations.get("scale-to-zero/cascade-scale") == Some(&"true".to_string()) {
                     if let Some(deps_str) = annotations.get("scale-to-zero/dependencies") {
@@ -164,7 +167,7 @@ async fn find_service_ip_by_name(service_name: &str) -> Option<String> {
     None
 }
 
-async fn scale_service_by_ip(client: Client, service_ip: String) -> anyhow::Result<()> {
+async fn scale_service_by_ip(client: Client, service_ip: String) -> Result<()> {
     let mut service: ServiceData;
     {
         let mut watched_services = WATCHED_SERVICES.lock().unwrap();
