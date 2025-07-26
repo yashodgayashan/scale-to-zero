@@ -317,6 +317,20 @@ fn process_resource<T: K8sResource>(
     Ok(())
 }
 
+fn parse_dependencies_annotation(service: &Service) -> Vec<String> {
+    service
+        .annotations()
+        .get("scale-to-zero/dependencies")
+        .map(|deps_str| {
+            deps_str
+                .split(',')
+                .map(|dep| dep.trim().to_string())
+                .filter(|dep| !dep.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(Vec::new)
+}
+
 async fn update_workload_status(
     kind: String,
     name: String,
@@ -345,6 +359,9 @@ async fn update_workload_status(
         },
         service.clone(),
     );
+    // Parse dependencies from annotations
+    let dependencies = parse_dependencies_annotation(&service);
+
     {
         let mut watched_services = WATCHED_SERVICES.lock().unwrap();
 
@@ -357,6 +374,7 @@ async fn update_workload_status(
                 name,
                 namespace,
                 backend_available: replicas >= 1,
+                dependencies,
             },
         );
     }

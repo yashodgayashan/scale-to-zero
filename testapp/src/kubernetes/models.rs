@@ -27,4 +27,5 @@ pub struct ServiceData {
     pub name: String,
     pub namespace: String,
     pub backend_available: bool,
+    pub dependencies: Vec<String>, // List of service IPs that should be updated when this service gets traffic
 }
