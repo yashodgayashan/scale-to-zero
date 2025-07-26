@@ -20,6 +20,15 @@ pub struct WorkloadReference {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct HPAConfig {
+    pub min_replicas: Option<i32>,
+    pub max_replicas: i32,
+    pub target_cpu_utilization_percentage: Option<i32>,
+    pub metrics: Option<String>, // JSON string of metrics configuration
+    pub behavior: Option<String>, // JSON string of behavior configuration
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ServiceData {
     pub scale_down_time: i64,
     pub last_packet_time: i64,
@@ -27,5 +36,15 @@ pub struct ServiceData {
     pub name: String,
     pub namespace: String,
     pub backend_available: bool,
-    pub dependencies: Vec<String>, // List of service IPs that should be updated when this service gets traffic
+    // Enhanced dependency management for parent-child relationships
+    pub dependencies: Vec<String>, // Services this depends on (children - these scale up first)
+    pub dependents: Vec<String>,   // Services that depend on this (parents - these scale down first)
+    // HPA management fields
+    pub hpa_enabled: bool,
+    pub hpa_name: Option<String>,
+    pub hpa_deleted: bool, // True when HPA has been deleted due to scale-down
+    // Store original HPA configuration for recreation
+    pub hpa_config: Option<HPAConfig>,
+    // Scaling order priority (lower numbers scale down first, scale up last)
+    pub scaling_priority: i32, // 0 = highest priority (parent), higher numbers = children
 }

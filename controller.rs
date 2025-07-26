@@ -312,6 +312,33 @@ async fn update_workload_status(
 
     info!(target: "update_workload_status", "updating workload status for service: {}, kind: {}, name: {}, namespace: {}, replicas: {}, service_ip: {}, scale_down_time: {}", service.name_any(), kind, name, namespace, replicas, service_ip, scale_down_time);
 
+    // Parse HPA-related annotations
+    let annotations = service.annotations();
+    let hpa_enabled = annotations
+        .get("scale-to-zero.isala.me/hpa-enabled")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    
+    let hpa_name = if hpa_enabled {
+        annotations
+            .get("scale-to-zero.isala.me/hpa-name")
+            .map(|s| s.clone())
+            .or_else(|| Some(format!("{}-hpa", service.name_any())))
+    } else {
+        None
+    };
+    
+    let original_min_replicas = annotations
+        .get("scale-to-zero.isala.me/original-min-replicas")
+        .and_then(|v| v.parse::<i32>().ok());
+        
+    let original_max_replicas = annotations
+        .get("scale-to-zero.isala.me/original-max-replicas")
+        .and_then(|v| v.parse::<i32>().ok())
+        .or_else(|| annotations
+            .get("scale-to-zero.isala.me/max-replicas")
+            .and_then(|v| v.parse::<i32>().ok()));
+
     // sleep for 1 second to allow the service to be created
     thread::sleep(std::time::Duration::from_secs(2));
 
@@ -335,6 +362,13 @@ async fn update_workload_status(
                 name,
                 namespace,
                 backend_available: replicas >= 1,
+                dependencies: Vec::new(), // List of service IPs that should be updated when this service gets traffic
+                // HPA suspension fields
+                hpa_enabled,
+                hpa_name,
+                original_min_replicas,
+                original_max_replicas,
+                hpa_suspended: false,
             },
         );
     }

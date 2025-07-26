@@ -9,7 +9,8 @@ use kube::{
     runtime::{watcher, WatchStreamExt},
     Client, ResourceExt,
 };
-use log::{info, warn};
+use log::{info, warn, error};
+use std::result::Result as StdResult;
 use std::collections::HashMap;
 use std::thread;
 
@@ -331,6 +332,46 @@ fn parse_dependencies_annotation(service: &Service) -> Vec<String> {
         .unwrap_or_else(Vec::new)
 }
 
+fn parse_dependents_annotation(service: &Service) -> Vec<String> {
+    service
+        .annotations()
+        .get("scale-to-zero/dependents")
+        .map(|deps_str| {
+            deps_str
+                .split(',')
+                .map(|dep| dep.trim().to_string())
+                .filter(|dep| !dep.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(Vec::new)
+}
+
+fn calculate_scaling_priority(service: &Service) -> i32 {
+    // Check if explicit priority is set
+    if let Some(priority_str) = service.annotations().get("scale-to-zero/scaling-priority") {
+        if let std::result::Result::Ok(priority) = priority_str.parse::<i32>() {
+            return priority;
+        }
+    }
+    
+    // Auto-calculate priority based on dependencies
+    let dependencies = parse_dependencies_annotation(service);
+    let dependents = parse_dependents_annotation(service);
+    
+    // Services with dependencies (parents) get lower priority (scale down first, scale up last)
+    // Services with dependents (children) get higher priority (scale down last, scale up first)
+    if dependencies.len() > 0 {
+        // Has dependencies = is a parent = low priority (scales down first)
+        10 + (dependencies.len() as i32 * 5)  // 10, 15, 20, etc.
+    } else if dependents.len() > 0 {
+        // Has dependents = is a child = high priority (scales up first)
+        90 + (dependents.len() as i32 * 5)    // 90, 95, 100, etc.
+    } else {
+        // No relationships = medium priority
+        50
+    }
+}
+
 async fn update_workload_status(
     kind: String,
     name: String,
@@ -361,6 +402,53 @@ async fn update_workload_status(
     );
     // Parse dependencies from annotations
     let dependencies = parse_dependencies_annotation(&service);
+    let dependents = parse_dependents_annotation(&service);
+    let scaling_priority = calculate_scaling_priority(&service);
+    
+    info!(target: "update_workload_status", "Service {} has {} dependencies, {} dependents, scaling priority: {}", 
+          service.name_any(), dependencies.len(), dependents.len(), scaling_priority);
+    
+    // Parse HPA-related annotations
+    let annotations = service.annotations();
+    let hpa_enabled = annotations
+        .get("scale-to-zero/hpa-enabled")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    
+    let hpa_name = if hpa_enabled {
+        annotations
+            .get("scale-to-zero/hpa-name")
+            .map(|s| s.clone())
+            .or_else(|| Some(format!("{}-hpa", service.name_any())))
+    } else {
+        None
+    };
+    
+    // Read HPA configuration from annotations for HPA-enabled services
+    let hpa_config = if hpa_enabled {
+        let min_replicas = annotations
+            .get("scale-to-zero/min-replicas")
+            .and_then(|v| v.parse::<i32>().ok());
+            
+        let max_replicas = annotations
+            .get("scale-to-zero/max-replicas")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(5); // Default max replicas
+            
+        let target_cpu_utilization_percentage = annotations
+            .get("scale-to-zero/target-cpu-utilization")
+            .and_then(|v| v.parse::<i32>().ok());
+            
+        Some(crate::kubernetes::models::HPAConfig {
+            min_replicas,
+            max_replicas,
+            target_cpu_utilization_percentage,
+            metrics: None, // For now, can be extended later
+            behavior: None, // For now, can be extended later
+        })
+    } else {
+        None
+    };
 
     {
         let mut watched_services = WATCHED_SERVICES.lock().unwrap();
@@ -370,13 +458,47 @@ async fn update_workload_status(
             ServiceData {
                 scale_down_time,
                 last_packet_time: chrono::Utc::now().timestamp(),
-                kind,
-                name,
-                namespace,
+                kind: kind.clone(),
+                name: name.clone(),
+                namespace: namespace.clone(),
                 backend_available: replicas >= 1,
                 dependencies,
+                dependents,
+                // HPA management fields
+                hpa_enabled,
+                hpa_name: hpa_name.clone(),
+                hpa_deleted: false,
+                hpa_config: hpa_config.clone(),
+                scaling_priority,
             },
         );
+    }
+
+    // Create initial HPA if service is HPA-enabled and has backends available
+    if hpa_enabled && replicas >= 1 {
+        if let (Some(hpa_name), Some(hpa_config)) = (hpa_name, hpa_config) {
+            info!("Creating initial HPA for service {}/{}", namespace, name);
+            
+            // Spawn async task to create HPA to avoid blocking the controller
+            let service_ip_clone = service_ip.clone();
+            let namespace_clone = namespace.clone();
+            let name_clone = name.clone();
+            let hpa_name_clone = hpa_name.clone();
+            let hpa_config_clone = hpa_config.clone();
+            
+            tokio::spawn(async move {
+                let hpa_controller_result = super::hpa_controller::HPASuspensionController::new().await;
+                if let StdResult::Ok(hpa_controller) = hpa_controller_result {
+                    if let Err(e) = hpa_controller.recreate_hpa(&namespace_clone, &hpa_name_clone, &name_clone, &hpa_config_clone).await {
+                        error!("Failed to create initial HPA for service {}: {}", service_ip_clone, e);
+                    } else {
+                        info!("Successfully created initial HPA for service {}/{}", namespace_clone, name_clone);
+                    }
+                } else {
+                    error!("Failed to create HPA controller for initial HPA creation");
+                }
+            });
+        }
     }
 
     Ok(())

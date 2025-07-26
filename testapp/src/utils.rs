@@ -22,20 +22,31 @@ pub async fn process_packet(packet_log: PacketLog) {
     let mut services = kubernetes::models::WATCHED_SERVICES.lock().unwrap();
 
     // Get the service data first, then update it and its dependencies
-    let service_dependencies = if let Some(service) = services.get_mut(&dist_addr_str) {
+    let (service_dependencies, service_dependents) = if let Some(service) = services.get_mut(&dist_addr_str) {
         service.last_packet_time = current_time;
         info!("Updated last_packet_time for {} ({}/{}) to {}", 
               dist_addr_str, service.namespace, service.name, current_time);
         
-        // Clone the dependencies to avoid borrowing issues
-        service.dependencies.clone()
+        // Clone the dependencies and dependents to avoid borrowing issues
+        (service.dependencies.clone(), service.dependents.clone())
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     
-    // Update dependent services based on annotations
-    if !service_dependencies.is_empty() {
-        update_dependent_services_by_dependencies(&mut services, &service_dependencies, &dist_addr_str, current_time);
+    // Update dependent services (children) and parent services when this service gets traffic
+    if !service_dependencies.is_empty() || !service_dependents.is_empty() {
+        info!("Service {} received traffic, updating {} dependencies (children) and {} dependents (parents)", 
+              dist_addr_str, service_dependencies.len(), service_dependents.len());
+        
+        // Update children (dependencies) - services this service depends on
+        for dependency_target in &service_dependencies {
+            update_service_by_target(&mut services, dependency_target, current_time, &dist_addr_str, "dependency");
+        }
+        
+        // Update parents (dependents) - services that depend on this service
+        for dependent_target in &service_dependents {
+            update_service_by_target(&mut services, dependent_target, current_time, &dist_addr_str, "dependent");
+        }
     }
   }
 
@@ -53,37 +64,36 @@ pub async fn process_packet(packet_log: PacketLog) {
   }
 }
 
-fn update_dependent_services_by_dependencies(
-    services: &mut StdHashMap<String, kubernetes::models::ServiceData>,
-    dependencies: &[String],
-    parent_service_ip: &str,
-    current_time: i64,
-) {
-    info!("Service {} received traffic, updating {} dependent services based on annotations", 
-          parent_service_ip, dependencies.len());
-
-    // Update all services listed in the dependencies annotation
-    for dependency_target in dependencies {
-        // The dependency can be either:
-        // 1. A service IP (e.g., "10.96.197.61")
-        // 2. A service name in same namespace (e.g., "user-service")
-        // 3. A service name in different namespace (e.g., "namespace/service-name")
-        
-        update_service_by_target(services, dependency_target, current_time, parent_service_ip);
-    }
-}
 
 fn update_service_by_target(
     services: &mut StdHashMap<String, kubernetes::models::ServiceData>,
     dependency_target: &str,
     current_time: i64,
-    parent_service_ip: &str,
+    triggering_service_ip: &str,
+    relationship_type: &str,
 ) {
     // Try to find by IP first (most direct)
     if let Some(service) = services.get_mut(dependency_target) {
+        // For dependency and dependent relationships, ALWAYS update last_packet_time
+        // regardless of current state to maintain proper parent-child lifecycle
+        if relationship_type == "dependency" || relationship_type == "dependent" {
+            service.last_packet_time = current_time;
+            info!("Updated {} service {} ({}/{}) last_packet_time to {} (triggered by {} via {}) - forced update for dependency relationship", 
+                  relationship_type, dependency_target, service.namespace, service.name, current_time, triggering_service_ip, relationship_type);
+            return;
+        }
+        
+        // For legacy relationships, only update if service is available
+        // This allows HPA-enabled services to scale down when they don't receive direct traffic
+        if service.hpa_enabled && !service.backend_available {
+            info!("Skipping last_packet_time update for HPA-enabled service {} ({}/{}) that is scaled to zero (triggered by {} via {})", 
+                  dependency_target, service.namespace, service.name, triggering_service_ip, relationship_type);
+            return;
+        }
+        
         service.last_packet_time = current_time;
-        info!("Updated dependent service {} ({}/{}) last_packet_time to {} (triggered by {} via annotation)", 
-              dependency_target, service.namespace, service.name, current_time, parent_service_ip);
+        info!("Updated {} service {} ({}/{}) last_packet_time to {} (triggered by {} via {})", 
+              relationship_type, dependency_target, service.namespace, service.name, current_time, triggering_service_ip, relationship_type);
         return;
     }
 
@@ -114,13 +124,30 @@ fn update_service_by_target(
     
     // Update the matching services
     if matching_service_ips.is_empty() {
-        info!("Dependent service '{}' not found in watched services", dependency_target);
+        info!("{} service '{}' not found in watched services", relationship_type, dependency_target);
     } else {
         for service_ip in matching_service_ips {
             if let Some(service) = services.get_mut(&service_ip) {
+                // For dependency and dependent relationships, ALWAYS update last_packet_time
+                // regardless of current state to maintain proper parent-child lifecycle
+                if relationship_type == "dependency" || relationship_type == "dependent" {
+                    service.last_packet_time = current_time;
+                    info!("Updated {} service {} ({}/{}) last_packet_time to {} (triggered by {} via {}) - forced update for dependency relationship", 
+                          relationship_type, service_ip, service.namespace, service.name, current_time, triggering_service_ip, relationship_type);
+                    continue;
+                }
+                
+                // For legacy relationships, only update if service is available
+                // This allows HPA-enabled services to scale down when they don't receive direct traffic
+                if service.hpa_enabled && !service.backend_available {
+                    info!("Skipping last_packet_time update for HPA-enabled service {} ({}/{}) that is scaled to zero (triggered by {} via {})", 
+                          service_ip, service.namespace, service.name, triggering_service_ip, relationship_type);
+                    continue;
+                }
+                
                 service.last_packet_time = current_time;
-                info!("Updated dependent service {} ({}/{}) last_packet_time to {} (triggered by {} via annotation)", 
-                      service_ip, service.namespace, service.name, current_time, parent_service_ip);
+                info!("Updated {} service {} ({}/{}) last_packet_time to {} (triggered by {} via {})", 
+                      relationship_type, service_ip, service.namespace, service.name, current_time, triggering_service_ip, relationship_type);
             }
         }
     }

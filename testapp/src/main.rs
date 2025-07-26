@@ -4,7 +4,7 @@ use aya::{
     programs::{Xdp, XdpFlags},
     util::online_cpus,
 };
-use clap::Parser;
+
 #[rustfmt::skip]
 use log::{debug, warn, info};
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
