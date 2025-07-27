@@ -40,7 +40,7 @@ unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
     }
 
     let ptr = (start + offset) as *const T;
-    Ok(&*ptr)
+    unsafe { Ok(&*ptr) }
 }
 
 fn is_scalable_dst(address: u32) -> Option<u32> {
@@ -56,7 +56,7 @@ fn try_testapp(ctx: XdpContext) -> Result<u32, ()> {
 
     let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
     let dst = u32::from_be_bytes(unsafe { (*ipv4hdr).dst_addr });
-    let src = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
+    let _src = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
 
     match is_scalable_dst(dst) {
         Some(value) => {

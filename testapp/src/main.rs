@@ -6,7 +6,7 @@ use aya::{
 };
 
 #[rustfmt::skip]
-use log::{debug, warn, info};
+use log::{debug, warn, info, error};
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 use tokio::task;
 use bytes::BytesMut;
@@ -30,6 +30,34 @@ async fn main() -> anyhow::Result<()> {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
 
+    // // Initialize etcd coordination if configured
+    // let use_etcd = std::env::var("USE_ETCD_COORDINATION")
+    //     .unwrap_or_else(|_| "false".to_string())
+    //     .parse::<bool>()
+    //     .unwrap_or(false);
+    
+    // if use_etcd {
+    //     let etcd_endpoints = std::env::var("ETCD_ENDPOINTS")
+    //         .unwrap_or_else(|_| "http://etcd:2379".to_string())
+    //         .split(',')
+    //         .map(|s| s.trim().to_string())
+    //         .collect::<Vec<String>>();
+        
+    //     info!("Initializing etcd coordination with endpoints: {:?}", etcd_endpoints);
+        
+    //     match kubernetes::etcd_coordinator::initialize_etcd_coordinator(etcd_endpoints).await {
+    //         Ok(_) => {
+    //             info!("Successfully initialized etcd coordination");
+    //         }
+    //         Err(e) => {
+    //             error!("Failed to initialize etcd coordination: {}", e);
+    //             return Err(e);
+    //         }
+    //     }
+    // } else {
+    //     info!("Running in single-node mode (no etcd coordination)");
+    // }
+
     // Start kubernetes event watcher in background
     task::spawn(async move {
         kubernetes::controller::kube_event_watcher().await.unwrap();
@@ -39,7 +67,6 @@ async fn main() -> anyhow::Result<()> {
     task::spawn(async move {
         kubernetes::scaler::scale_down().await.unwrap();
     });
-
 
     // This will include your eBPF object file as raw bytes at compile-time and load it at
     // runtime. This approach is recommended for most real-world use cases. If you would
@@ -100,8 +127,12 @@ async fn main() -> anyhow::Result<()> {
     // sync scalable_service_list with SCALABLE_PODS
     let mut scalable_service_list: HashMap<_, u32, u32> =
         HashMap::try_from(ebpf.map_mut("SERVICE_LIST").unwrap()).unwrap();
+    
+    // Start the sync loop
     loop {
-        utils::sync_data(&mut scalable_service_list).await;
+        if let Err(e) = utils::sync_data(&mut scalable_service_list).await {
+            error!("Failed to sync data: {}", e);
+        }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 

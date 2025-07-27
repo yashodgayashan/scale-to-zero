@@ -19,7 +19,7 @@ pub struct WorkloadReference {
     pub namespace: String,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HPAConfig {
     pub min_replicas: Option<i32>,
     pub max_replicas: i32,
@@ -28,7 +28,7 @@ pub struct HPAConfig {
     pub behavior: Option<String>, // JSON string of behavior configuration
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ServiceData {
     pub scale_down_time: i64,
     pub last_packet_time: i64,
