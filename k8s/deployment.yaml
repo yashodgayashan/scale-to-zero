@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: scaling-controller
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: scaling-controller
+  template:
+    metadata:
+      labels:
+        app: scaling-controller
+    spec:
+      hostNetwork: true
+      hostPID: true
+      
+      serviceAccountName: ebpf-service-account
+      
+      containers:
+      - name: scaling-controller
+        image: yashodperera/scale-to-zero:0.1
+        imagePullPolicy: Always
+        
+        securityContext:
+          privileged: true
+        
+        volumeMounts:
+        - name: sys-fs-bpf
+          mountPath: /sys/fs/bpf
+          mountPropagation: Bidirectional
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        
+        env:
+        - name: RUST_LOG
+          value: "info"
+        
+        resources:
+          limits:
+            memory: "1000Mi"
+            cpu: "800m"
+          requests:
+            memory: "400Mi"
+            cpu: "400m"
+      
+      volumes:
+      - name: sys-fs-bpf
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: proc
+        hostPath:
+          path: /proc
+          type: Directory
+      - name: sys
+        hostPath:
+          path: /sys
+          type: Directory
+
+---
+# Service Account with required permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ebpf-service-account
+  namespace: default
+
+---
+# Cluster Role for eBPF operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ebpf-cluster-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "services", "endpoints", "namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets"]
+  verbs: ["get", "patch", "list", "watch"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# Bind the cluster role to service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ebpf-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ebpf-cluster-role
+subjects:
+- kind: ServiceAccount
+  name: ebpf-service-account
+  namespace: default

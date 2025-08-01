@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the built binary
-COPY target/release/testapp /usr/local/bin/testapp
+COPY target/release/scale-to-zero /usr/local/bin/scale-to-zero
 
 # Set entrypoint
-ENTRYPOINT ["/usr/local/bin/testapp"]
+ENTRYPOINT ["/usr/local/bin/scale-to-zero"]

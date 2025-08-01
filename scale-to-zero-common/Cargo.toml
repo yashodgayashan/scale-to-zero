@@ -1,5 +1,5 @@
 [package]
-name = "testapp-common"
+name = "scale-to-zero-common"
 version = "0.1.0"
 edition.workspace = true
 

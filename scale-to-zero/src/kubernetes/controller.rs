@@ -9,27 +9,29 @@ use kube::{
     runtime::{watcher, WatchStreamExt},
     Client, ResourceExt,
 };
-use log::{info, warn};
+use log::{info, warn, error};
+use std::result::Result as StdResult;
 use std::collections::HashMap;
 use std::thread;
 
 use crate::kubernetes::models::{ServiceData, WorkloadReference, WATCHED_SERVICES};
 
 pub async fn kube_event_watcher() -> anyhow::Result<()> {
-    // Workload (deploy/statefulset) to service mapper
     let mut workload_service: HashMap<WorkloadReference, Service> = HashMap::new();
 
     let client = Client::try_default().await?;
 
-    let services: Api<Service> = Api::default_namespaced(client.clone());
-    let deployments: Api<Deployment> = Api::default_namespaced(client.clone());
-    let statefulsets: Api<StatefulSet> = Api::default_namespaced(client.clone());
+    let services: Api<Service> = Api::all(client.clone());
+    let deployments: Api<Deployment> = Api::all(client.clone());
+    let statefulsets: Api<StatefulSet> = Api::all(client.clone());
+
+    info!(target: "kube_event_watcher", "watching for services, deployments, and statefulsets");
+    info!(target: "kube_event_watcher", "services: {:?}", services);
 
     let svc_watcher = watcher(services, watcher::Config::default());
     let deployment_watcher = watcher(deployments.clone(), watcher::Config::default());
     let statefulset_watcher = watcher(statefulsets.clone(), watcher::Config::default());
 
-    // select on applied events from all watchers
     let mut combo_stream = stream::select_all(vec![
         svc_watcher
             .applied_objects()
@@ -44,7 +46,7 @@ pub async fn kube_event_watcher() -> anyhow::Result<()> {
             .map_ok(Watched::StatefulSet)
             .boxed(),
     ]);
-    // SelectAll Stream elements must have the same Item, so all packed in this:
+
     #[allow(clippy::large_enum_variant)]
     enum Watched {
         Service(Service),
@@ -54,42 +56,54 @@ pub async fn kube_event_watcher() -> anyhow::Result<()> {
     while let Some(o) = combo_stream.try_next().await? {
         match o {
             Watched::Service(s) => {
-                // ignore services that don't have the annotation
                 if !s
                     .annotations()
-                    .contains_key("scale-to-zero.isala.me/reference")
+                    .contains_key("scale-to-zero/reference")
                     && !s
                         .annotations()
-                        .contains_key("scale-to-zero.isala.me/scale-down-time")
+                        .contains_key("scale-to-zero/scale-down-time")
                 {
                     info!(target: "kube_event_watcher", "Service {} is not annotated, skipping", s.name_any());
                     continue;
                 }
 
-                // Get the workload reference from the annotation
                 let workload_ref = s
                     .annotations()
-                    .get("scale-to-zero.isala.me/reference")
+                    .get("scale-to-zero/reference")
                     .unwrap()
                     .clone();
                 let workload_ref_split: Vec<&str> = workload_ref.split('/').collect();
 
-                if workload_ref_split.len() != 2 {
-                    warn!(
-                        target: "kube_event_watcher",
-                        "Service {} has invalid reference annotation: {}",
-                        s.name_any(),
-                        workload_ref
-                    );
-                    continue;
-                }
-                let workload_type = workload_ref_split[0];
-                let workload_name = workload_ref_split[1];
+                // Support both formats:
+                // 1. "deployment/name" (same namespace as service)
+                // 2. "deployment/namespace/name" (cross-namespace)
+                let (workload_type, workload_name, target_namespace) = match workload_ref_split.len() {
+                    2 => {
+                        let workload_type = workload_ref_split[0].to_string();
+                        let workload_name = workload_ref_split[1].to_string();
+                        let target_namespace = s.namespace().unwrap_or_default();
+                        (workload_type, workload_name, target_namespace)
+                    }
+                    3 => {
+                        let workload_type = workload_ref_split[0].to_string();
+                        let target_namespace = workload_ref_split[1].to_string();
+                        let workload_name = workload_ref_split[2].to_string();
+                        (workload_type, workload_name, target_namespace)
+                    }
+                    _ => {
+                        warn!(
+                            target: "kube_event_watcher",
+                            "Service {} has invalid reference annotation: {} (expected 'type/name' or 'type/namespace/name')",
+                            s.name_any(),
+                            workload_ref
+                        );
+                        continue;
+                    }
+                };
 
-                // Get the idle minutes from the annotation
                 let scale_down_time = s
                     .annotations()
-                    .get("scale-to-zero.isala.me/scale-down-time")
+                    .get("scale-to-zero/scale-down-time")
                     .unwrap()
                     .parse::<i64>()
                     .context("Failed to parse scale-down-time")?;
@@ -108,12 +122,13 @@ pub async fn kube_event_watcher() -> anyhow::Result<()> {
 
                 info!(target: "kube_watcher", "service: {}, workload_type: {}, workload_name: {}, scale_down_time: {}, service_ip: {}", s.name_any(), workload_type, workload_name, scale_down_time, service_ip);
 
-                let workload = match workload_type {
+                let workload: anyhow::Result<()> = match workload_type.as_str() {
                     "deployment" => {
-                        let deployment = deployments
-                            .get(workload_name)
+                        let deployment_api = Api::namespaced(client.clone(), &target_namespace);
+                        let deployment: Deployment = deployment_api
+                            .get(&workload_name)
                             .await
-                            .context("Failed to get deployment")?;
+                            .context(format!("Failed to get deployment {} in namespace {}", workload_name, target_namespace))?;
 
                         let replicas = deployment
                             .spec
@@ -147,10 +162,11 @@ pub async fn kube_event_watcher() -> anyhow::Result<()> {
                         Ok(())
                     }
                     "statefulset" => {
-                        let statefulset = statefulsets
-                            .get(workload_name)
+                        let statefulset_api = Api::namespaced(client.clone(), &target_namespace);
+                        let statefulset: StatefulSet = statefulset_api
+                            .get(&workload_name)
                             .await
-                            .context("Failed to get statefulset")?;
+                            .context(format!("Failed to get statefulset {} in namespace {}", workload_name, target_namespace))?;
 
                         let replicas = statefulset
                             .spec
@@ -202,7 +218,6 @@ pub async fn kube_event_watcher() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Define the common interface
 trait K8sResource {
     fn name(&self) -> String;
     fn kind(&self) -> String;
@@ -210,7 +225,6 @@ trait K8sResource {
     fn replicas(&self) -> Option<i32>;
 }
 
-// Implement the interface for Deployment
 impl K8sResource for Deployment {
     fn name(&self) -> String {
         self.name_any()
@@ -233,7 +247,6 @@ impl K8sResource for Deployment {
     }
 }
 
-// Implement the interface for StatefulSet
 impl K8sResource for StatefulSet {
     fn name(&self) -> String {
         self.name_any()
@@ -256,7 +269,6 @@ impl K8sResource for StatefulSet {
     }
 }
 
-// Now we can define a function that works with any K8sResource
 fn process_resource<T: K8sResource>(
     resource: T,
     workload_service: &HashMap<WorkloadReference, Service>,
@@ -277,7 +289,6 @@ fn process_resource<T: K8sResource>(
         .replicas()
         .ok_or_else(|| anyhow::anyhow!("Failed to get replicas for {}", resource.name()))?;
 
-    // TODO: Check if health check is passing before setting backend_available to true
     thread::sleep(std::time::Duration::from_secs(2));
 
     let service_ip = service
@@ -293,6 +304,53 @@ fn process_resource<T: K8sResource>(
         service_data.backend_available = replicas >= 1;
     }
     Ok(())
+}
+
+fn parse_dependencies_annotation(service: &Service) -> Vec<String> {
+    service
+        .annotations()
+        .get("scale-to-zero/dependencies")
+        .map(|deps_str| {
+            deps_str
+                .split(',')
+                .map(|dep| dep.trim().to_string())
+                .filter(|dep| !dep.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(Vec::new)
+}
+
+fn parse_dependents_annotation(service: &Service) -> Vec<String> {
+    service
+        .annotations()
+        .get("scale-to-zero/dependents")
+        .map(|deps_str| {
+            deps_str
+                .split(',')
+                .map(|dep| dep.trim().to_string())
+                .filter(|dep| !dep.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(Vec::new)
+}
+
+fn calculate_scaling_priority(service: &Service) -> i32 {
+    if let Some(priority_str) = service.annotations().get("scale-to-zero/scaling-priority") {
+        if let std::result::Result::Ok(priority) = priority_str.parse::<i32>() {
+            return priority;
+        }
+    }
+    
+    let dependencies = parse_dependencies_annotation(service);
+    let dependents = parse_dependents_annotation(service);
+    
+    if dependencies.len() > 0 {
+        10 + (dependencies.len() as i32 * 5)  // 10, 15, 20, etc.
+    } else if dependents.len() > 0 {
+        90 + (dependents.len() as i32 * 5)    // 90, 95, 100, etc.
+    } else {
+        50
+    }
 }
 
 async fn update_workload_status(
@@ -312,34 +370,6 @@ async fn update_workload_status(
 
     info!(target: "update_workload_status", "updating workload status for service: {}, kind: {}, name: {}, namespace: {}, replicas: {}, service_ip: {}, scale_down_time: {}", service.name_any(), kind, name, namespace, replicas, service_ip, scale_down_time);
 
-    // Parse HPA-related annotations
-    let annotations = service.annotations();
-    let hpa_enabled = annotations
-        .get("scale-to-zero.isala.me/hpa-enabled")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-    
-    let hpa_name = if hpa_enabled {
-        annotations
-            .get("scale-to-zero.isala.me/hpa-name")
-            .map(|s| s.clone())
-            .or_else(|| Some(format!("{}-hpa", service.name_any())))
-    } else {
-        None
-    };
-    
-    let original_min_replicas = annotations
-        .get("scale-to-zero.isala.me/original-min-replicas")
-        .and_then(|v| v.parse::<i32>().ok());
-        
-    let original_max_replicas = annotations
-        .get("scale-to-zero.isala.me/original-max-replicas")
-        .and_then(|v| v.parse::<i32>().ok())
-        .or_else(|| annotations
-            .get("scale-to-zero.isala.me/max-replicas")
-            .and_then(|v| v.parse::<i32>().ok()));
-
-    // sleep for 1 second to allow the service to be created
     thread::sleep(std::time::Duration::from_secs(2));
 
     workload_service.insert(
@@ -350,6 +380,53 @@ async fn update_workload_status(
         },
         service.clone(),
     );
+    let dependencies = parse_dependencies_annotation(&service);
+    let dependents = parse_dependents_annotation(&service);
+    let scaling_priority = calculate_scaling_priority(&service);
+    
+    info!(target: "update_workload_status", "Service {} has {} dependencies, {} dependents, scaling priority: {}", 
+          service.name_any(), dependencies.len(), dependents.len(), scaling_priority);
+    
+    let annotations = service.annotations();
+    let hpa_enabled = annotations
+        .get("scale-to-zero/hpa-enabled")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    
+    let hpa_name = if hpa_enabled {
+        annotations
+            .get("scale-to-zero/hpa-name")
+            .map(|s| s.clone())
+            .or_else(|| Some(format!("{}-hpa", service.name_any())))
+    } else {
+        None
+    };
+    
+    let hpa_config = if hpa_enabled {
+        let min_replicas = annotations
+            .get("scale-to-zero/min-replicas")
+            .and_then(|v| v.parse::<i32>().ok());
+            
+        let max_replicas = annotations
+            .get("scale-to-zero/max-replicas")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(5); // Default max replicas
+            
+        let target_cpu_utilization_percentage = annotations
+            .get("scale-to-zero/target-cpu-utilization")
+            .and_then(|v| v.parse::<i32>().ok());
+            
+        Some(crate::kubernetes::models::HPAConfig {
+            min_replicas,
+            max_replicas,
+            target_cpu_utilization_percentage,
+            metrics: None,
+            behavior: None,
+        })
+    } else {
+        None
+    };
+
     {
         let mut watched_services = WATCHED_SERVICES.lock().unwrap();
 
@@ -358,19 +435,44 @@ async fn update_workload_status(
             ServiceData {
                 scale_down_time,
                 last_packet_time: chrono::Utc::now().timestamp(),
-                kind,
-                name,
-                namespace,
+                kind: kind.clone(),
+                name: name.clone(),
+                namespace: namespace.clone(),
                 backend_available: replicas >= 1,
-                dependencies: Vec::new(), // List of service IPs that should be updated when this service gets traffic
-                // HPA suspension fields
+                dependencies,
+                dependents,
                 hpa_enabled,
-                hpa_name,
-                original_min_replicas,
-                original_max_replicas,
-                hpa_suspended: false,
+                hpa_name: hpa_name.clone(),
+                hpa_deleted: false,
+                hpa_config: hpa_config.clone(),
+                scaling_priority,
             },
         );
+    }
+
+    if hpa_enabled && replicas >= 1 {
+        if let (Some(hpa_name), Some(hpa_config)) = (hpa_name, hpa_config) {
+            info!("Creating initial HPA for service {}/{}", namespace, name);
+            
+            let service_ip_clone = service_ip.clone();
+            let namespace_clone = namespace.clone();
+            let name_clone = name.clone();
+            let hpa_name_clone = hpa_name.clone();
+            let hpa_config_clone = hpa_config.clone();
+            
+            tokio::spawn(async move {
+                let hpa_controller_result = super::hpa_controller::HPASuspensionController::new().await;
+                if let StdResult::Ok(hpa_controller) = hpa_controller_result {
+                    if let Err(e) = hpa_controller.recreate_hpa(&namespace_clone, &hpa_name_clone, &name_clone, &hpa_config_clone).await {
+                        error!("Failed to create initial HPA for service {}: {}", service_ip_clone, e);
+                    } else {
+                        info!("Successfully created initial HPA for service {}/{}", namespace_clone, name_clone);
+                    }
+                } else {
+                    error!("Failed to create HPA controller for initial HPA creation");
+                }
+            });
+        }
     }
 
     Ok(())

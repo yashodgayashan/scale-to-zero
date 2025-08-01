@@ -7,15 +7,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::kubernetes::models::ServiceData;
 
-// Etcd coordinator for managing distributed coordination and service metadata
-// Currently simplified to work with etcd-rs 1.0.1
-
 const LEADER_KEY: &str = "/etcd-coordination/leader";
 const NODE_HEARTBEAT_PREFIX: &str = "/etcd-coordination/heartbeats";
 const SERVICE_DATA_PREFIX: &str = "/etcd-coordination/services";
 const SERVICE_LIST_PREFIX: &str = "/etcd-coordination/service-list";
-const HEARTBEAT_INTERVAL: u64 = 30; // seconds
-const LEADER_TTL: u64 = 45; // seconds
+const HEARTBEAT_INTERVAL: u64 = 30;
+const LEADER_TTL: u64 = 45;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EtcdServiceData {
@@ -45,12 +42,10 @@ pub struct EtcdCoordinator {
     leader_lease_id: Arc<Mutex<Option<u64>>>,
 }
 
-// Global coordinator instance
 pub static ETCD_COORDINATOR: Mutex<Option<EtcdCoordinator>> = Mutex::new(None);
 
 impl EtcdCoordinator {
     pub async fn new(etcd_endpoints: Vec<String>) -> Result<Self> {
-        // For now, just use a basic configuration
         let client = Client::connect(ClientConfig {
             endpoints: etcd_endpoints.into_iter().map(|s| s.into()).collect(),
             auth: None,
@@ -86,7 +81,6 @@ impl EtcdCoordinator {
     pub async fn start(&self) -> Result<()> {
         info!("Starting EtcdCoordinator for node: {}", self.node_id);
         
-        // Simplified mode - just assume we're the leader for now
         *self.is_leader.lock().unwrap() = true;
         info!("Simplified mode: assuming leadership");
         
@@ -98,42 +92,35 @@ impl EtcdCoordinator {
     }
 
     pub async fn update_service_packet_time(&self, service_ip: &str, packet_time: i64) -> Result<()> {
-        // TODO: Implement etcd operations
         debug!("Would update service {} packet time to {} via etcd", service_ip, packet_time);
         Ok(())
     }
 
     pub async fn pull_service_data_from_etcd(&self) -> Result<()> {
-        // TODO: Implement etcd operations
         debug!("Would pull service data from etcd");
         Ok(())
     }
 
     pub async fn push_service_data_to_etcd(&self) -> Result<()> {
-        // TODO: Implement etcd operations
         debug!("Would push service data to etcd");
         Ok(())
     }
 
     pub async fn pull_service_list_from_etcd(&self) -> Result<StdHashMap<u32, u32>> {
-        // TODO: Implement etcd operations
         debug!("Would pull service list from etcd");
         Ok(StdHashMap::new())
     }
 
     pub async fn push_service_list_to_etcd(&self) -> Result<()> {
-        // TODO: Implement etcd operations
         debug!("Would push service list to etcd");
         Ok(())
     }
 
     pub async fn cleanup(&self) {
         info!("Cleaning up EtcdCoordinator for node: {}", self.node_id);
-        // TODO: Implement cleanup operations
     }
 }
 
-// Convenience functions for global coordinator access
 pub async fn initialize_etcd_coordinator(etcd_endpoints: Vec<String>) -> Result<()> {
     let coordinator = EtcdCoordinator::new(etcd_endpoints).await?;
     coordinator.start().await?;

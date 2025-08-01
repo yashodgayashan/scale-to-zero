@@ -8,7 +8,7 @@ fn main() -> anyhow::Result<()> {
         .context("MetadataCommand::exec")?;
     let ebpf_package = packages
         .into_iter()
-        .find(|cargo_metadata::Package { name, .. }| name == "testapp-ebpf")
-        .ok_or_else(|| anyhow!("testapp-ebpf package not found"))?;
+        .find(|cargo_metadata::Package { name, .. }| name == "scale-to-zero-ebpf")
+        .ok_or_else(|| anyhow!("scale-to-zero-ebpf package not found"))?;
     aya_build::build_ebpf([ebpf_package])
 }

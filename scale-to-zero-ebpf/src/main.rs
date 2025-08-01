@@ -13,7 +13,7 @@ use network_types::{
     eth::{EthHdr, EtherType},
     ip::Ipv4Hdr,
 };
-use testapp_common::PacketLog;
+use scale_to_zero_common::PacketLog;
 
 #[map]
 static SCALE_REQUESTS: PerfEventArray<PacketLog> = PerfEventArray::new(0);
@@ -22,8 +22,8 @@ static SCALE_REQUESTS: PerfEventArray<PacketLog> = PerfEventArray::new(0);
 static SERVICE_LIST: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(1024, 0);
 
 #[xdp]
-pub fn testapp(ctx: XdpContext) -> u32 {
-    match try_testapp(ctx) {
+pub fn scale_to_zero(ctx: XdpContext) -> u32 {
+    match try_scale_to_zero(ctx) {
         Ok(ret) => ret,
         Err(_) => xdp_action::XDP_ABORTED,
     }
@@ -47,7 +47,7 @@ fn is_scalable_dst(address: u32) -> Option<u32> {
     unsafe { SERVICE_LIST.get(&address).cloned() }
 }
 
-fn try_testapp(ctx: XdpContext) -> Result<u32, ()> {
+fn try_scale_to_zero(ctx: XdpContext) -> Result<u32, ()> {
     let ethhdr: *const EthHdr = unsafe { ptr_at(&ctx, 0)? };
     match unsafe { (*ethhdr).ether_type } {
         EtherType::Ipv4 => {}

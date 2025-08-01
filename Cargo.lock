@@ -1782,6 +1782,52 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
+name = "scale-to-zero"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aya",
+ "aya-build",
+ "aya-log",
+ "bytes",
+ "chrono",
+ "clap",
+ "env_logger",
+ "etcd-rs",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "lazy_static",
+ "libc",
+ "log",
+ "network-interface",
+ "once_cell",
+ "scale-to-zero-common",
+ "scale-to-zero-ebpf",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "scale-to-zero-common"
+version = "0.1.0"
+dependencies = [
+ "aya",
+]
+
+[[package]]
+name = "scale-to-zero-ebpf"
+version = "0.1.0"
+dependencies = [
+ "aya-ebpf",
+ "aya-log-ebpf",
+ "network-types",
+ "scale-to-zero-common",
+ "which 6.0.3",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2031,51 +2077,6 @@ dependencies = [
  "once_cell",
  "rustix 1.0.8",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "testapp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aya",
- "aya-build",
- "aya-log",
- "bytes",
- "chrono",
- "clap",
- "env_logger",
- "etcd-rs",
- "futures",
- "k8s-openapi",
- "kube",
- "libc",
- "log",
- "network-interface",
- "once_cell",
- "serde",
- "serde_json",
- "testapp-common",
- "testapp-ebpf",
- "tokio",
-]
-
-[[package]]
-name = "testapp-common"
-version = "0.1.0"
-dependencies = [
- "aya",
-]
-
-[[package]]
-name = "testapp-ebpf"
-version = "0.1.0"
-dependencies = [
- "aya-ebpf",
- "aya-log-ebpf",
- "network-types",
- "testapp-common",
- "which 6.0.3",
 ]
 
 [[package]]

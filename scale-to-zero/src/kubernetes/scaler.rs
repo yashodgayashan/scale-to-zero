@@ -34,9 +34,6 @@ pub async fn scale_down() -> Result<()> {
         info!(target: "scale_down", "Checking {} services for scale down in priority order", services_to_check.len());
         
         for (key, mut service) in services_to_check {
-            info!(target: "scale_down", "Service {} in namespace {} (priority: {}) has scale_down_time: {} and last_packet_time: {}, hpa_enabled: {}, hpa_deleted: {}, backend_available: {}", 
-                  service.name, service.namespace, service.scaling_priority, service.scale_down_time, service.last_packet_time, service.hpa_enabled, service.hpa_deleted, service.backend_available);
-            
             let idle_minutes = service.scale_down_time;
             let last_packet_time = service.last_packet_time;
             let now = chrono::Utc::now().timestamp();
@@ -191,7 +188,7 @@ pub async fn scale_up(service_ip: String) -> Result<()> {
             error!("Failed to scale up service {}: {}", svc.name, e);
         } else {
             // Add a small delay between scaling operations to ensure proper ordering
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
     
@@ -288,7 +285,7 @@ async fn scale_service_by_ip(client: Client, service_ip: String) -> Result<()> {
         tokio::spawn({
             let service_ip_clone = service_ip.clone();
             async move {
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 
                 let hpa_controller = match HPASuspensionController::new().await {
                     Ok(controller) => controller,

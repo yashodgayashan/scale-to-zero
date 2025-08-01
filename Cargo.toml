@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "testapp",
-    "testapp-common",
-    "testapp-ebpf",
+    "scale-to-zero",
+    "scale-to-zero-common",
+    "scale-to-zero-ebpf",
 ]
-default-members = ["testapp", "testapp-common"]
+default-members = ["scale-to-zero", "scale-to-zero-common"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
@@ -29,6 +29,6 @@ log = { version = "0.4.22", default-features = false }
 tokio = { version = "1.40.0", default-features = false }
 which = { version = "6.0.0", default-features = false }
 
-[profile.release.package.testapp-ebpf]
+[profile.release.package.scale-to-zero-ebpf]
 debug = 2
 codegen-units = 1

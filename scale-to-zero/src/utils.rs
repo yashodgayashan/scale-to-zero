@@ -3,7 +3,7 @@ use aya::{
 };
 use k8s_openapi::chrono;
 use log::{error, info, warn};
-use testapp_common::PacketLog;
+use scale_to_zero_common::PacketLog;
 use std::net::Ipv4Addr;
 use std::collections::HashMap as StdHashMap;
 use anyhow::Result;
@@ -26,8 +26,9 @@ pub async fn process_packet(packet_log: PacketLog) {
     // Get the service data first, then update it and its dependencies
     if let Some(service) = services.get_mut(&dist_addr_str) {
         service.last_packet_time = current_time;
-        info!("Updated last_packet_time for {} ({}/{}) to {}", 
-              dist_addr_str, service.namespace, service.name, current_time);
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        info!("[{}] Updated last_packet_time for {} ({}/{}) to {}",
+              timestamp, service.name, service.namespace, service.kind, current_time);
         
         // Clone the dependencies and dependents to avoid borrowing issues
         (service.dependencies.clone(), service.dependents.clone())
@@ -36,28 +37,28 @@ pub async fn process_packet(packet_log: PacketLog) {
     }
   }; // services lock is released here
     
-  // For etcd coordination, also update via etcd if available
-  if let Err(e) = kubernetes::etcd_coordinator::update_packet_time_via_etcd(&dist_addr_str, current_time).await {
-      warn!("Failed to update packet time via etcd: {}", e);
-  }
+    // For etcd coordination, also update via etcd if available
+    if let Err(e) = kubernetes::etcd_coordinator::update_packet_time_via_etcd(&dist_addr_str, current_time).await {
+        warn!("Failed to update packet time via etcd: {}", e);
+    }
     
-  // Update dependent services (children) and parent services when this service gets traffic
-  if !service_dependencies.is_empty() || !service_dependents.is_empty() {
-      // info!("Service {} received traffic, updating {} dependencies (children) and {} dependents (parents)", 
+    // Update dependent services (children) and parent services when this service gets traffic
+    if !service_dependencies.is_empty() || !service_dependents.is_empty() {
+        // info!("Service {} received traffic, updating {} dependencies (children) and {} dependents (parents)", 
       //       dist_addr_str, service_dependencies.len(), service_dependents.len());
       
       // Reacquire the lock for updating dependencies
       let mut services = kubernetes::models::WATCHED_SERVICES.lock().unwrap();
-      
-      // Update children (dependencies) - services this service depends on
-      for dependency_target in &service_dependencies {
-          update_service_by_target(&mut services, dependency_target, current_time, &dist_addr_str, "dependency");
-      }
-      
-      // Update parents (dependents) - services that depend on this service
-      for dependent_target in &service_dependents {
-          update_service_by_target(&mut services, dependent_target, current_time, &dist_addr_str, "dependent");
-      }
+        
+        // Update children (dependencies) - services this service depends on
+        for dependency_target in &service_dependencies {
+            update_service_by_target(&mut services, dependency_target, current_time, &dist_addr_str, "dependency");
+        }
+        
+        // Update parents (dependents) - services that depend on this service
+        for dependent_target in &service_dependents {
+            update_service_by_target(&mut services, dependent_target, current_time, &dist_addr_str, "dependent");
+    }
   }
 
   if packet_log.action == 1 {
